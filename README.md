@@ -60,7 +60,7 @@ Evolução de Personagem: Sistema progressivo de níveis (curva de XP baseada em
 
 Salvamento Automático: Seus dados de progresso, inventário e missões são salvos automaticamente no localStorage do navegador (e a cada 45 segundos) com opção de carregar partidas salvas a qualquer momento.
 
-Relatório de Erros Integrado: Ferramenta na tela de menu principal para reportar bugs diretamente por e-mail (airesvinicius11@gmail.com).
+Relatório de Erros Integrado: Ferramenta na tela de menu principal para reportar bugs diretamente por e-mail. 
 
 🚀 Como Jogar
 
