@@ -1,0 +1,56 @@
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;900&family=Fredoka:wght@500;600;700&family=Inter:wght@400;600;700;800&display=swap');
+
+body {
+    font-family: 'Inter', sans-serif;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    overflow: hidden;
+    background: #090d16;
+}
+
+.cinzel-font {
+    font-family: 'Cinzel', serif;
+}
+
+.cartoon-font {
+    font-family: 'Fredoka', 'Inter', sans-serif;
+}
+
+.cartoon-shadow {
+    box-shadow: 0 4px 0 #111827;
+}
+
+.cartoon-border {
+    border: 3px solid #111827;
+}
+
+.safe-top {
+    top: max(0.6rem, env(safe-area-inset-top));
+}
+
+.safe-bottom {
+    bottom: max(0.6rem, env(safe-area-inset-bottom));
+}
+
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: #1e293b;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #d97706;
+    border-radius: 3px;
+}
+
+@keyframes pulseGlow {
+    0%, 100% { text-shadow: 0 0 20px rgba(217, 119, 6, 0.6); }
+    50% { text-shadow: 0 0 40px rgba(245, 158, 11, 0.9); }
+}
+
+.title-glow {
+    animation: pulseGlow 3s infinite ease-in-out;
+}
