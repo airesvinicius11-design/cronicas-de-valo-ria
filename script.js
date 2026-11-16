@@ -12,12 +12,374 @@ let gameWorld = { width: 4600, height: 4600 };
 let selectedClassKey = 'mago';
 let activeDialogNpc = null;
 
-// Progressive XP Curve: Math.floor(100 * Math.pow(1.4, level - 1))
+// =========================================================================
+// 1. SISTEMA DE CONTAS COM ID ALEATÓRIO & LISTA DE AMIGOS
+// =========================================================================
+const ACCOUNTS_STORAGE_KEY = 'valoria_accounts_v2';
+const ACTIVE_ACCOUNT_KEY = 'valoria_active_account_id';
+
+let accountsDB = {};
+let currentAccount = null;
+
+function generateRandomAccountId() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = 'VAL-';
+    for (let i = 0; i < 4; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return accountsDB[code] ? generateRandomAccountId() : code;
+}
+
+function initAccountSystem() {
+    try {
+        const raw = localStorage.getItem(ACCOUNTS_STORAGE_KEY);
+        if (raw) accountsDB = JSON.parse(raw);
+    } catch (e) {
+        accountsDB = {};
+    }
+
+    let activeId = localStorage.getItem(ACTIVE_ACCOUNT_KEY);
+    if (!activeId || !accountsDB[activeId]) {
+        const newId = generateRandomAccountId();
+        accountsDB[newId] = {
+            id: newId,
+            nickname: 'Aventureiro',
+            createdAt: Date.now(),
+            friends: [],
+            saveData: null
+        };
+        activeId = newId;
+        persistAccountsDB();
+    }
+
+    switchAccount(activeId, true);
+}
+
+function persistAccountsDB() {
+    localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(accountsDB));
+    if (currentAccount) {
+        localStorage.setItem(ACTIVE_ACCOUNT_KEY, currentAccount.id);
+    }
+}
+
+function switchAccount(accountId, silent = false) {
+    if (!accountsDB[accountId]) return;
+    currentAccount = accountsDB[accountId];
+    localStorage.setItem(ACTIVE_ACCOUNT_KEY, currentAccount.id);
+
+    // Atualiza textos da UI
+    document.getElementById('menuAccountName').innerText = currentAccount.nickname;
+    document.getElementById('menuAccountId').innerText = currentAccount.id;
+    document.getElementById('creationAccountTag').innerText = `${currentAccount.nickname} (${currentAccount.id})`;
+    document.getElementById('modalCurrentAccName').innerText = currentAccount.nickname;
+    document.getElementById('modalCurrentAccId').innerText = currentAccount.id;
+    document.getElementById('friendsModalMyId').innerText = currentAccount.id;
+    document.getElementById('statusAccountId').innerText = currentAccount.id;
+    document.getElementById('menuFriendCount').innerText = (currentAccount.friends || []).length;
+
+    renderSavedAccountsList();
+    renderFriendsList();
+    initPeerNetwork();
+
+    if (!silent) {
+        showToast(`Conta alterada para ${currentAccount.nickname} (${currentAccount.id})`, 'fa-id-card');
+    }
+}
+
+function createNewAccount() {
+    const input = document.getElementById('newAccountNameInput');
+    const nick = input.value.trim() || 'Herói';
+    const newId = generateRandomAccountId();
+
+    accountsDB[newId] = {
+        id: newId,
+        nickname: nick,
+        createdAt: Date.now(),
+        friends: [],
+        saveData: null
+    };
+    input.value = '';
+    persistAccountsDB();
+    switchAccount(newId, false);
+}
+
+function openAccountModal() {
+    renderSavedAccountsList();
+    openModal('accountModal');
+}
+
+function renderSavedAccountsList() {
+    const container = document.getElementById('savedAccountsList');
+    if (!container) return;
+    container.innerHTML = '';
+
+    Object.values(accountsDB).forEach(acc => {
+        const isCurrent = currentAccount && acc.id === currentAccount.id;
+        const div = document.createElement('div');
+        div.className = `flex items-center justify-between p-2.5 rounded-xl border-2 ${isCurrent ? 'bg-amber-500/15 border-amber-400' : 'bg-[#14141a] border-slate-800'}`;
+        div.innerHTML = `
+            <div>
+                <div class="text-xs font-extrabold text-white cartoon-font">${acc.nickname}</div>
+                <div class="text-[11px] font-mono text-amber-400">${acc.id}</div>
+            </div>
+            ${isCurrent
+                ? '<span class="text-[10px] bg-amber-500 text-[#111827] font-black px-2 py-0.5 rounded-lg cartoon-font">Atual</span>'
+                : `<button onclick="switchAccount('${acc.id}')" class="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold px-3 py-1 rounded-lg border border-[#111827] cartoon-font cursor-pointer">Entrar</button>`
+            }
+        `;
+        container.appendChild(div);
+    });
+}
+
+function copyPlayerId() {
+    if (!currentAccount) return;
+    navigator.clipboard.writeText(currentAccount.id).then(() => {
+        showToast(`ID ${currentAccount.id} copiado! Envie para um amigo.`, 'fa-copy');
+    }).catch(() => {
+        showToast(`Seu ID é: ${currentAccount.id}`, 'fa-id-badge');
+    });
+}
+
+// =========================================================================
+// 2. SISTEMA DE AMIZADES & MULTIPLAYER COOPERATIVO ONLINE (PEERJS)
+// =========================================================================
+let peer = null;
+let coopConn = null;
+let remotePlayer = null;
+let lastNetworkSync = 0;
+
+function getPeerNetworkId(valoriaId) {
+    return 'cronicas-valoria-rpg-' + valoriaId.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+}
+
+function initPeerNetwork() {
+    if (!currentAccount || typeof Peer === 'undefined') return;
+    if (peer) {
+        try { peer.destroy(); } catch (e) {}
+        peer = null;
+    }
+
+    const myPeerId = getPeerNetworkId(currentAccount.id);
+    peer = new Peer(myPeerId, { debug: 0 });
+
+    peer.on('open', () => {
+        const badge = document.getElementById('onlineNetworkBadge');
+        if (badge) {
+            badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Online (${currentAccount.id})`;
+        }
+    });
+
+    peer.on('connection', (conn) => {
+        setupCoopConnection(conn);
+    });
+
+    peer.on('error', (err) => {
+        if (err.type === 'peer-unavailable') {
+            showToast('Amigo offline ou ID não encontrado no momento.', 'fa-user-slash');
+        }
+    });
+}
+
+function addFriendById() {
+    const idInput = document.getElementById('addFriendIdInput');
+    const nickInput = document.getElementById('addFriendNickInput');
+    let friendId = idInput.value.trim().toUpperCase();
+
+    if (!friendId) {
+        showToast('Digite o ID do amigo (ex: VAL-8492).', 'fa-triangle-exclamation');
+        return;
+    }
+    if (!friendId.startsWith('VAL-')) friendId = 'VAL-' + friendId;
+
+    if (friendId === currentAccount.id) {
+        showToast('Você não pode adicionar seu próprio ID!', 'fa-circle-exclamation');
+        return;
+    }
+
+    if (!currentAccount.friends) currentAccount.friends = [];
+    if (currentAccount.friends.some(f => f.id === friendId)) {
+        showToast('Este jogador já está na sua lista de amigos!', 'fa-user-check');
+        return;
+    }
+
+    const friendNick = nickInput.value.trim() || `Aliado ${friendId.slice(-4)}`;
+    currentAccount.friends.push({ id: friendId, nickname: friendNick });
+    persistAccountsDB();
+
+    idInput.value = '';
+    nickInput.value = '';
+    document.getElementById('menuFriendCount').innerText = currentAccount.friends.length;
+    renderFriendsList();
+    showToast(`${friendNick} (${friendId}) adicionado aos amigos!`, 'fa-user-plus');
+}
+
+function removeFriend(friendId) {
+    currentAccount.friends = (currentAccount.friends || []).filter(f => f.id !== friendId);
+    persistAccountsDB();
+    document.getElementById('menuFriendCount').innerText = currentAccount.friends.length;
+    renderFriendsList();
+}
+
+function renderFriendsList() {
+    const container = document.getElementById('friendsListContainer');
+    if (!container || !currentAccount) return;
+    container.innerHTML = '';
+
+    const friends = currentAccount.friends || [];
+    if (friends.length === 0) {
+        container.innerHTML = `<div class="text-center text-xs text-slate-400 py-4 bg-[#14141a] rounded-2xl border border-slate-800">Nenhum amigo adicionado ainda. Peça o ID (VAL-XXXX) do seu amigo!</div>`;
+        return;
+    }
+
+    friends.forEach(friend => {
+        const isConnectedHere = remotePlayer && remotePlayer.accountId === friend.id;
+        const div = document.createElement('div');
+        div.className = 'flex items-center justify-between bg-[#14141a] border-2 border-[#111827] p-3 rounded-2xl';
+        div.innerHTML = `
+            <div class="flex items-center gap-2.5">
+                <div class="w-9 h-9 rounded-xl bg-sky-900/60 border border-sky-500/40 flex items-center justify-center text-sky-300">
+                    <i class="fa-solid fa-user-astronaut"></i>
+                </div>
+                <div>
+                    <div class="text-xs font-extrabold text-white cartoon-font">${friend.nickname}</div>
+                    <div class="text-[11px] font-mono text-amber-400">${friend.id}</div>
+                </div>
+            </div>
+            <div class="flex items-center gap-1.5">
+                ${isConnectedHere
+                    ? '<span class="text-[10px] bg-emerald-500 text-[#111827] font-black px-2.5 py-1 rounded-lg cartoon-font">Na Sala</span>'
+                    : `<button onclick="connectToFriend('${friend.id}')" class="bg-emerald-500 hover:bg-emerald-400 text-[#111827] font-extrabold px-3 py-1.5 rounded-xl border-2 border-[#111827] text-xs cartoon-font shadow cursor-pointer flex items-center gap-1">
+                        <i class="fa-solid fa-gamepad"></i> Jogar Junto
+                       </button>`
+                }
+                <button onclick="removeFriend('${friend.id}')" title="Remover" class="w-7 h-7 rounded-lg bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white flex items-center justify-center text-xs cursor-pointer">
+                    <i class="fa-solid fa-trash"></i>
+                </button>
+            </div>
+        `;
+        container.appendChild(div);
+    });
+}
+
+function connectToFriend(friendId) {
+    if (!peer || peer.disconnected) {
+        showToast('Reconectando à rede online...', 'fa-wifi');
+        initPeerNetwork();
+        return;
+    }
+    showToast(`Conectando com ${friendId}...`, 'fa-satellite-dish');
+    const conn = peer.connect(getPeerNetworkId(friendId), { reliable: true });
+    setupCoopConnection(conn);
+}
+
+function setupCoopConnection(conn) {
+    if (coopConn && coopConn.open) {
+        try { coopConn.close(); } catch (e) {}
+    }
+    coopConn = conn;
+
+    conn.on('open', () => {
+        // Se o jogador ainda estiver no menu, entra direto no mundo
+        if (document.getElementById('gameHud').classList.contains('hidden')) {
+            if (currentAccount && currentAccount.saveData) {
+                loadAdventureFromMenu();
+            } else {
+                startNewAdventure();
+            }
+        }
+
+        // Envia pacote inicial de estado
+        sendCoopPacket({
+            type: 'sync',
+            accountId: currentAccount.id,
+            name: player.name,
+            classKey: player.classKey,
+            weaponType: player.equippedWeapon.typeKey || 'staff',
+            level: player.level,
+            x: player.x,
+            y: player.y,
+            facing: player.facing,
+            isMoving: player.isMoving,
+            isAttacking: player.isAttacking
+        });
+
+        document.getElementById('coopOnlineDot').classList.remove('hidden');
+        document.getElementById('hudCoopStatus').classList.remove('hidden');
+        document.getElementById('activeCoopBanner').classList.remove('hidden');
+        renderFriendsList();
+        showToast('Sessão Cooperativa Online conectada!', 'fa-user-group');
+    });
+
+    conn.on('data', (data) => {
+        if (!data || typeof data !== 'object') return;
+        if (data.type === 'sync') {
+            remotePlayer = {
+                accountId: data.accountId,
+                name: data.name || 'Amigo',
+                classKey: data.classKey || 'cavaleiro',
+                weaponType: data.weaponType || 'sword',
+                level: data.level || 1,
+                targetX: data.x,
+                targetY: data.y,
+                x: remotePlayer ? remotePlayer.x : data.x,
+                y: remotePlayer ? remotePlayer.y : data.y,
+                facing: data.facing || 'right',
+                isMoving: !!data.isMoving,
+                isAttacking: !!data.isAttacking,
+                animTimer: (remotePlayer ? remotePlayer.animTimer : 0) + 0.12
+            };
+            document.getElementById('hudCoopFriendName').innerText = remotePlayer.name;
+            document.getElementById('connectedPeerLabel').innerText = `${remotePlayer.name} (${remotePlayer.accountId})`;
+        } else if (data.type === 'attack') {
+            if (remotePlayer) {
+                remotePlayer.isAttacking = true;
+                setTimeout(() => { if (remotePlayer) remotePlayer.isAttacking = false; }, 220);
+            }
+            if (data.projectile) {
+                projectiles.push({ ...data.projectile, isRemote: true });
+            }
+        }
+    });
+
+    conn.on('close', () => {
+        handleCoopDisconnect();
+    });
+
+    conn.on('error', () => {
+        handleCoopDisconnect();
+    });
+}
+
+function sendCoopPacket(payload) {
+    if (coopConn && coopConn.open) {
+        try { coopConn.send(payload); } catch (e) {}
+    }
+}
+
+function disconnectCoop() {
+    if (coopConn) {
+        try { coopConn.close(); } catch (e) {}
+    }
+    handleCoopDisconnect();
+}
+
+function handleCoopDisconnect() {
+    coopConn = null;
+    remotePlayer = null;
+    document.getElementById('coopOnlineDot').classList.add('hidden');
+    document.getElementById('hudCoopStatus').classList.add('hidden');
+    document.getElementById('activeCoopBanner').classList.add('hidden');
+    renderFriendsList();
+    showToast('Sessão online encerrada.', 'fa-link-slash');
+}
+
+// =========================================================================
+// 3. LÓGICA PRINCIPAL DO RPG
+// =========================================================================
 function getRequiredXpForLevel(lvl) {
     return Math.floor(100 * Math.pow(1.4, lvl - 1));
 }
 
-// Player state
 let player = {
     x: 1500,
     y: 1540,
@@ -81,22 +443,22 @@ let floatingTexts = [];
 function spawnEnemies() {
     enemies = [];
     for(let i = 0; i < 8; i++) {
-        enemies.push({ id: 'slime_' + i, type: 'slime', name: 'Slime Verde', regionTier: 1, x: 1850 + Math.random() * 850, y: 1200 + Math.random() * 850, radius: 20, hp: 50, maxHp: 50, attack: 9, xpValue: 90, speed: 1.5, animOffset: Math.random() * 10 });
+        enemies.push({ id: 'slime_' + i, type: 'slime', name: 'Slime Verde', regionTier: 1, x: 1850 + Math.random() * 850, y: 1200 + Math.random() * 850, radius: 20, hp: 50, maxHp: 50, attack: 9, xpValue: 90, speed: 1.5, animOffset: Math.random() * 10, respawnTimer: 0 });
     }
     for(let i = 0; i < 6; i++) {
-        enemies.push({ id: 'goblin_' + i, type: 'goblin', name: 'Goblin Saqueador', regionTier: 1, x: 2050 + Math.random() * 800, y: 1350 + Math.random() * 900, radius: 22, hp: 80, maxHp: 80, attack: 14, xpValue: 130, speed: 2.1, facing: 'left', animOffset: Math.random() * 10 });
+        enemies.push({ id: 'goblin_' + i, type: 'goblin', name: 'Goblin Saqueador', regionTier: 1, x: 2050 + Math.random() * 800, y: 1350 + Math.random() * 900, radius: 22, hp: 80, maxHp: 80, attack: 14, xpValue: 130, speed: 2.1, facing: 'left', animOffset: Math.random() * 10, respawnTimer: 0 });
     }
     for(let i = 0; i < 6; i++) {
-        enemies.push({ id: 'wolf_' + i, type: 'wolf', name: 'Lobo Sombrio', regionTier: 2, x: 2250 + Math.random() * 900, y: 780 + Math.random() * 650, radius: 21, hp: 95, maxHp: 95, attack: 16, xpValue: 170, speed: 2.6, facing: 'left', animOffset: Math.random() * 10 });
+        enemies.push({ id: 'wolf_' + i, type: 'wolf', name: 'Lobo Sombrio', regionTier: 2, x: 2250 + Math.random() * 900, y: 780 + Math.random() * 650, radius: 21, hp: 95, maxHp: 95, attack: 16, xpValue: 170, speed: 2.6, facing: 'left', animOffset: Math.random() * 10, respawnTimer: 0 });
     }
     for(let i = 0; i < 5; i++) {
-        enemies.push({ id: 'skeleton_' + i, type: 'skeleton', name: 'Esqueleto Corsário', regionTier: 2, x: 2950 + Math.random() * 650, y: 1180 + Math.random() * 550, radius: 22, hp: 115, maxHp: 115, attack: 18, xpValue: 210, speed: 2.0, facing: 'left', animOffset: Math.random() * 10 });
+        enemies.push({ id: 'skeleton_' + i, type: 'skeleton', name: 'Esqueleto Corsário', regionTier: 2, x: 2950 + Math.random() * 650, y: 1180 + Math.random() * 550, radius: 22, hp: 115, maxHp: 115, attack: 18, xpValue: 210, speed: 2.0, facing: 'left', animOffset: Math.random() * 10, respawnTimer: 0 });
     }
     for(let i = 0; i < 4; i++) {
-        enemies.push({ id: 'golem_' + i, type: 'golem', name: 'Golem de Pedra', regionTier: 3, x: 850 + Math.random() * 850, y: 3420 + Math.random() * 650, radius: 28, hp: 180, maxHp: 180, attack: 23, xpValue: 310, speed: 1.4, facing: 'right', animOffset: Math.random() * 10 });
+        enemies.push({ id: 'golem_' + i, type: 'golem', name: 'Golem de Pedra', regionTier: 3, x: 850 + Math.random() * 850, y: 3420 + Math.random() * 650, radius: 28, hp: 180, maxHp: 180, attack: 23, xpValue: 310, speed: 1.4, facing: 'right', animOffset: Math.random() * 10, respawnTimer: 0 });
     }
-    enemies.push({ id: 'boss_ork', type: 'boss', name: 'Chefe Grommash', regionTier: 2, x: 2780, y: 2180, radius: 30, hp: 240, maxHp: 240, attack: 22, xpValue: 550, speed: 1.8, facing: 'left', animOffset: 0 });
-    enemies.push({ id: 'boss_colossus', type: 'boss', name: 'Colosso Ignis', regionTier: 3, x: 1380, y: 3920, radius: 34, hp: 340, maxHp: 340, attack: 28, xpValue: 780, speed: 1.6, facing: 'left', animOffset: 2 });
+    enemies.push({ id: 'boss_ork', type: 'boss', name: 'Chefe Grommash', regionTier: 2, x: 2780, y: 2180, radius: 30, hp: 240, maxHp: 240, attack: 22, xpValue: 550, speed: 1.8, facing: 'left', animOffset: 0, respawnTimer: 0 });
+    enemies.push({ id: 'boss_colossus', type: 'boss', name: 'Colosso Ignis', regionTier: 3, x: 1380, y: 3920, radius: 34, hp: 340, maxHp: 340, attack: 28, xpValue: 780, speed: 1.6, facing: 'left', animOffset: 2, respawnTimer: 0 });
 }
 spawnEnemies();
 
@@ -163,18 +525,30 @@ for(let i = 0; i < 260; i++) {
 let camera = { x: 0, y: 0 };
 let keys = {};
 
-// --- ISOLATED KEYBOARD SHORTCUTS FOR ACTIVE GAMEPLAY ONLY ---
-window.addEventListener('keydown', e => {
-    const hudHidden = document.getElementById('gameHud').classList.contains('hidden');
-    const anyModalOpen = !document.getElementById('inventoryModal').classList.contains('hidden') ||
-                         !document.getElementById('questsModal').classList.contains('hidden') ||
-                         !document.getElementById('statusModal').classList.contains('hidden') ||
-                         !document.getElementById('bugReportModal').classList.contains('hidden');
+// =========================================================================
+// 4. CONTROLES PC (COM BLOQUEIO QUANDO DIGITA EM INPUTS)
+// =========================================================================
+function isTypingInForm() {
+    const el = document.activeElement;
+    return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
+}
 
+function isAnyModalOpen() {
+    const modals = ['inventoryModal', 'questsModal', 'statusModal', 'bugReportModal', 'accountModal', 'friendsModal'];
+    return modals.some(id => {
+        const el = document.getElementById(id);
+        return el && !el.classList.contains('hidden');
+    });
+}
+
+window.addEventListener('keydown', e => {
+    if (isTypingInForm()) return;
+
+    const hudHidden = document.getElementById('gameHud').classList.contains('hidden');
     const key = e.key.toLowerCase();
     keys[key] = true;
 
-    if (hudHidden || anyModalOpen) return;
+    if (hudHidden || isAnyModalOpen()) return;
 
     if (key === 'e') {
         e.preventDefault();
@@ -198,9 +572,12 @@ window.addEventListener('keyup', e => {
     keys[e.key.toLowerCase()] = false;
 });
 
-// PC Mouse Click Aim & Attack + Direct NPC Clicking in world
+window.addEventListener('blur', () => {
+    keys = {};
+});
+
 canvas.addEventListener('click', e => {
-    if (document.getElementById('gameHud').classList.contains('hidden')) return;
+    if (document.getElementById('gameHud').classList.contains('hidden') || isAnyModalOpen()) return;
     const rect = canvas.getBoundingClientRect();
     const clientX = e.clientX - rect.left;
     const clientY = e.clientY - rect.top;
@@ -221,7 +598,9 @@ canvas.addEventListener('click', e => {
     }
 });
 
-// --- MULTI-TOUCH MOBILE CONTROLS ---
+// =========================================================================
+// 5. CONTROLES MOBILE MULTI-TOUCH
+// =========================================================================
 let joyVec = { x: 0, y: 0 };
 let activeJoyTouchId = null;
 
@@ -334,13 +713,15 @@ function setupMultiTouchControls() {
             fn();
         });
     };
-    bindActionBtn('btnAttack', playerAttack);
+    bindActionBtn('btnAttack', () => playerAttack());
     bindActionBtn('btnInteract', interactWithNearest);
     bindActionBtn('btnPotion', usePotion);
 }
 setupMultiTouchControls();
 
-// --- SLIDING COLLISION ENGINE ---
+// =========================================================================
+// 6. COLISÕES & RENDERIZAÇÃO
+// =========================================================================
 function resolveEntityCollisions(entity) {
     const r = entity.radius || 18;
     entity.x = Math.max(45, Math.min(gameWorld.width - 45, entity.x));
@@ -409,7 +790,6 @@ function resolveEntityCollisions(entity) {
     }
 }
 
-// --- CARTOON CHARACTER RENDERER ---
 function drawCartoonCharacter(targetCtx, opts) {
     const {
         x, y, scale = 1, facing = 'right',
@@ -721,7 +1101,6 @@ function renderUIAppAvatars() {
     }
 }
 
-// --- SILENT BUG REPORT SYSTEM (NO IN-GAME POPUPS) ---
 function openBugReportModal() {
     document.getElementById('bugReportTextarea').value = '';
     document.getElementById('bugReportModal').classList.remove('hidden');
@@ -739,9 +1118,12 @@ function sendBugReport() {
     setTimeout(() => document.body.removeChild(hiddenFrame), 1000);
 
     closeModal('bugReportModal');
+    showToast('Relatório preparado para envio!', 'fa-bug');
 }
 
-// --- MENU & NAVIGATION FLOW ---
+// =========================================================================
+// 7. FLUXO DE MENUS E SAVE POR CONTA
+// =========================================================================
 function toggleHudCard(expand) {
     if (expand) {
         document.getElementById('hudExpandBtn').classList.add('hidden');
@@ -757,11 +1139,21 @@ function showCharacterCreation() {
     setTimeout(() => {
         document.getElementById('mainMenuScreen').classList.add('hidden');
         document.getElementById('charCreationScreen').classList.remove('hidden');
-    }, 350);
+    }, 250);
 }
 
 function backToMainMenu() {
     document.getElementById('charCreationScreen').classList.add('hidden');
+    document.getElementById('mainMenuScreen').classList.remove('hidden');
+    document.getElementById('mainMenuScreen').classList.remove('opacity-0');
+}
+
+function returnToMenuFromGame() {
+    saveGameProgress(true);
+    closeModal('statusModal');
+    document.getElementById('gameHud').classList.add('hidden');
+    document.getElementById('mobileRegionPill').classList.add('hidden');
+    document.getElementById('gameControls').classList.add('hidden');
     document.getElementById('mainMenuScreen').classList.remove('hidden');
     document.getElementById('mainMenuScreen').classList.remove('opacity-0');
 }
@@ -790,7 +1182,7 @@ function selectClass(clsKey) {
 
 function startNewAdventure() {
     let nameInput = document.getElementById('heroNameInput').value.trim();
-    player.name = nameInput || "Aldric";
+    player.name = nameInput || (currentAccount ? currentAccount.nickname : "Aldric");
     player.classKey = selectedClassKey;
     player.level = 1;
     player.xp = 0;
@@ -838,35 +1230,38 @@ function startNewAdventure() {
 }
 
 function loadAdventureFromMenu() {
-    const savedData = localStorage.getItem('cronicas_valoria_save');
+    const savedData = currentAccount && currentAccount.saveData
+        ? currentAccount.saveData
+        : JSON.parse(localStorage.getItem('cronicas_valoria_save') || 'null');
+
     if (!savedData) {
-        showToast('Nenhum progresso salvo encontrado! Clique em Nova Aventura.', 'fa-triangle-exclamation');
+        showToast('Nenhum progresso salvo nesta conta! Clique em Nova Aventura.', 'fa-triangle-exclamation');
         return;
     }
-    try {
-        const data = JSON.parse(savedData);
-        player = data.player;
-        inventory = data.inventory;
-        quests = data.quests;
 
-        document.getElementById('mainMenuScreen').classList.add('hidden');
-        document.getElementById('charCreationScreen').classList.add('hidden');
-        document.getElementById('gameHud').classList.remove('hidden');
-        document.getElementById('mobileRegionPill').classList.remove('hidden');
-        document.getElementById('gameControls').classList.remove('hidden');
+    player = savedData.player;
+    inventory = savedData.inventory;
+    quests = savedData.quests;
 
-        updateHUD();
-        showToast(`Aventura de ${player.name} carregada com sucesso!`, 'fa-folder-open');
-    } catch (err) {
-        showToast('Erro ao carregar save. Dados corrompidos.', 'fa-triangle-exclamation');
-    }
+    document.getElementById('mainMenuScreen').classList.add('hidden');
+    document.getElementById('charCreationScreen').classList.add('hidden');
+    document.getElementById('gameHud').classList.remove('hidden');
+    document.getElementById('mobileRegionPill').classList.remove('hidden');
+    document.getElementById('gameControls').classList.remove('hidden');
+
+    updateHUD();
+    showToast(`Aventura de ${player.name} carregada!`, 'fa-folder-open');
 }
 
 function saveGameProgress(silent = false) {
     const payload = { player, inventory, quests };
+    if (currentAccount) {
+        currentAccount.saveData = payload;
+        persistAccountsDB();
+    }
     localStorage.setItem('cronicas_valoria_save', JSON.stringify(payload));
     if (!silent) {
-        showToast('Progresso salvo com sucesso em Valória!', 'fa-floppy-disk');
+        showToast(`Progresso salvo na conta ${currentAccount ? currentAccount.id : ''}!`, 'fa-floppy-disk');
     }
 }
 
@@ -907,7 +1302,9 @@ function spawnFloatingText(x, y, text, color = '#fbbf24') {
     floatingTexts.push({ x, y, text, color, vy: -1.4, life: 45 });
 }
 
-// --- GAME LOOP UPDATE ---
+// =========================================================================
+// 8. LOOP DE ATUALIZAÇÃO & SINCRONIZAÇÃO ONLINE
+// =========================================================================
 function update() {
     if (document.getElementById('gameHud').classList.contains('hidden')) return;
 
@@ -920,10 +1317,12 @@ function update() {
     let moveX = joyVec.x;
     let moveY = joyVec.y;
 
-    if (keys['w'] || keys['arrowup']) moveY -= 1;
-    if (keys['s'] || keys['arrowdown']) moveY += 1;
-    if (keys['a'] || keys['arrowleft']) moveX -= 1;
-    if (keys['d'] || keys['arrowright']) moveX += 1;
+    if (!isTypingInForm() && !isAnyModalOpen()) {
+        if (keys['w'] || keys['arrowup']) moveY -= 1;
+        if (keys['s'] || keys['arrowdown']) moveY += 1;
+        if (keys['a'] || keys['arrowleft']) moveX -= 1;
+        if (keys['d'] || keys['arrowright']) moveX += 1;
+    }
 
     const mag = Math.hypot(moveX, moveY);
     if (mag > 1) {
@@ -954,6 +1353,32 @@ function update() {
         }
     }
 
+    // Interpolação suave do amigo conectado online
+    if (remotePlayer) {
+        remotePlayer.x += (remotePlayer.targetX - remotePlayer.x) * 0.25;
+        remotePlayer.y += (remotePlayer.targetY - remotePlayer.y) * 0.25;
+        if (remotePlayer.isMoving) remotePlayer.animTimer += 0.045;
+    }
+
+    // Envia posição ao amigo a cada ~50ms
+    const now = Date.now();
+    if (coopConn && coopConn.open && now - lastNetworkSync > 50) {
+        lastNetworkSync = now;
+        sendCoopPacket({
+            type: 'sync',
+            accountId: currentAccount ? currentAccount.id : 'VAL-0000',
+            name: player.name,
+            classKey: player.classKey,
+            weaponType: player.equippedWeapon.typeKey || 'staff',
+            level: player.level,
+            x: Math.round(player.x),
+            y: Math.round(player.y),
+            facing: player.facing,
+            isMoving: player.isMoving,
+            isAttacking: player.isAttacking
+        });
+    }
+
     const targetCamX = player.x - canvas.width / 2;
     const targetCamY = player.y - canvas.height / 2;
     camera.x += (targetCamX - camera.x) * 0.14;
@@ -969,7 +1394,7 @@ function update() {
         enemies.forEach(enemy => {
             if (enemy.hp <= 0 || hit) return;
             if (Math.hypot(proj.x - enemy.x, proj.y - enemy.y) < enemy.radius + 12) {
-                damageEnemy(enemy, proj.damage);
+                if (!proj.isRemote) damageEnemy(enemy, proj.damage);
                 hit = true;
             }
         });
@@ -978,7 +1403,15 @@ function update() {
     }
 
     enemies.forEach(enemy => {
-        if (enemy.hp <= 0) return;
+        if (enemy.hp <= 0) {
+            if (enemy.respawnTimer > 0) {
+                enemy.respawnTimer--;
+                if (enemy.respawnTimer <= 0) {
+                    enemy.hp = enemy.maxHp;
+                }
+            }
+            return;
+        }
         let dx = player.x - enemy.x;
         let dy = player.y - enemy.y;
         let dist = Math.hypot(dx, dy);
@@ -1017,7 +1450,9 @@ function update() {
     updateHUD();
 }
 
-// --- RENDER FUNCTION WITH Y-SORTING DEPTH ---
+// =========================================================================
+// 9. RENDERIZAÇÃO DO MUNDO E DO AMIGO ONLINE
+// =========================================================================
 function render() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (document.getElementById('gameHud').classList.contains('hidden')) return;
@@ -1131,6 +1566,30 @@ function render() {
         renderList.push({ sortY: enemy.y + 14, draw: () => drawEnemy(enemy) });
     });
 
+    // Renderiza o amigo conectado online
+    if (remotePlayer) {
+        renderList.push({
+            sortY: remotePlayer.y + 16,
+            draw: () => {
+                drawCartoonCharacter(ctx, {
+                    x: remotePlayer.x,
+                    y: remotePlayer.y,
+                    scale: 1.05,
+                    facing: remotePlayer.facing,
+                    isMoving: remotePlayer.isMoving,
+                    animTimer: remotePlayer.animTimer,
+                    isAttacking: remotePlayer.isAttacking,
+                    attackProgress: 0.5,
+                    style: remotePlayer.classKey,
+                    weaponType: remotePlayer.weaponType,
+                    name: `${remotePlayer.name}`,
+                    level: remotePlayer.level,
+                    nameColor: '#38bdf8'
+                });
+            }
+        });
+    }
+
     renderList.push({
         sortY: player.y + 16,
         draw: () => {
@@ -1207,6 +1666,34 @@ function render() {
     });
 
     ctx.restore();
+
+    // Indicador direcional na tela quando o amigo online está longe
+    if (remotePlayer) {
+        const screenX = remotePlayer.x - camera.x;
+        const screenY = remotePlayer.y - camera.y;
+        if (screenX < 30 || screenX > canvas.width - 30 || screenY < 30 || screenY > canvas.height - 30) {
+            const angle = Math.atan2(remotePlayer.y - player.y, remotePlayer.x - player.x);
+            const pad = 54;
+            const indX = Math.max(pad, Math.min(canvas.width - pad, canvas.width / 2 + Math.cos(angle) * (canvas.width * 0.42)));
+            const indY = Math.max(pad + 30, Math.min(canvas.height - pad - 30, canvas.height / 2 + Math.sin(angle) * (canvas.height * 0.38)));
+
+            ctx.save();
+            ctx.translate(indX, indY);
+            ctx.fillStyle = '#0284c7';
+            ctx.strokeStyle = '#111111';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(0, 0, 16, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.font = '800 11px "Fredoka", sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(remotePlayer.name, 0, 28);
+            ctx.restore();
+        }
+    }
 }
 
 function drawProp(p) {
@@ -1322,67 +1809,592 @@ function drawTree(t) {
 function drawEnemy(enemy) {
     ctx.save();
     ctx.translate(enemy.x, enemy.y);
+
+    const dir = enemy.facing === 'left' ? -1 : 1;
+    const time = Date.now() * 0.006 + enemy.animOffset;
+    const walkCycle = Math.sin(time * 1.6);
+    const idleBob = Math.sin(time) * 2;
+
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     ctx.strokeStyle = '#111111';
     ctx.lineWidth = 3;
 
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    // Sombra realista no chão
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.38)';
     ctx.beginPath();
-    ctx.ellipse(0, enemy.radius * 0.85, enemy.radius * 0.9, 6, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, enemy.radius * 0.85, enemy.radius * 1.05, 7, 0, 0, Math.PI * 2);
     ctx.fill();
 
     if (enemy.type === 'slime') {
-        const squish = Math.sin(Date.now() * 0.008 + enemy.animOffset) * 3;
-        ctx.fillStyle = '#22c55e';
-        ctx.beginPath();
-        ctx.ellipse(0, 2 - squish * 0.5, enemy.radius + squish, enemy.radius * 0.85 - squish * 0.5, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
+        drawSlimeTexture(ctx, enemy, time);
+    } else if (enemy.type === 'goblin') {
+        drawGoblinTexture(ctx, enemy, dir, walkCycle, idleBob);
     } else if (enemy.type === 'wolf') {
-        ctx.fillStyle = '#334155';
-        ctx.beginPath();
-        ctx.ellipse(0, 2, 18, 11, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
+        drawWolfTexture(ctx, enemy, dir, walkCycle);
     } else if (enemy.type === 'skeleton') {
-        ctx.fillStyle = '#cbd5e1';
-        ctx.beginPath();
-        ctx.roundRect(-10, -4, 20, 18, 5);
-        ctx.fill();
-        ctx.stroke();
+        drawSkeletonTexture(ctx, enemy, dir, walkCycle, idleBob);
     } else if (enemy.type === 'golem') {
-        ctx.fillStyle = '#475569';
-        ctx.beginPath();
-        ctx.roundRect(-18, -16, 36, 32, 8);
-        ctx.fill();
-        ctx.stroke();
-    } else {
-        ctx.fillStyle = enemy.type === 'boss' ? '#991b1b' : '#4d7c0f';
-        ctx.beginPath();
-        ctx.roundRect(-12, -4, 24, 18, 6);
-        ctx.fill();
-        ctx.stroke();
+        drawGolemTexture(ctx, enemy, dir, walkCycle, idleBob, time);
+    } else if (enemy.type === 'boss') {
+        drawBossTexture(ctx, enemy, dir, walkCycle, idleBob, time);
     }
 
-    const barW = enemy.type === 'boss' ? 62 : 42;
-    const barY = enemy.type === 'boss' ? -46 : -34;
-    ctx.fillStyle = '#111111';
-    ctx.fillRect(-barW / 2 - 1.5, barY - 1.5, barW + 3, 8);
-    ctx.fillStyle = '#ef4444';
-    ctx.fillRect(-barW / 2, barY, (enemy.hp / enemy.maxHp) * barW, 5);
+    // Barra de Vida Cartoon acima do mob
+    const barW = enemy.type === 'boss' ? 68 : 44;
+    const barY = enemy.type === 'boss' ? -54 : -38;
+    const hpRatio = Math.max(0, enemy.hp / enemy.maxHp);
 
+    ctx.fillStyle = '#111111';
+    ctx.beginPath();
+    ctx.roundRect(-barW / 2 - 2, barY - 2, barW + 4, 9, 4);
+    ctx.fill();
+
+    ctx.fillStyle = '#334155';
+    ctx.fillRect(-barW / 2, barY, barW, 5);
+
+    ctx.fillStyle = enemy.type === 'boss' ? '#f59e0b' : '#ef4444';
+    ctx.fillRect(-barW / 2, barY, hpRatio * barW, 5);
+
+    // Nome do Chefe ou do Mob
     if (enemy.type === 'boss') {
-        ctx.font = '800 12px "Fredoka", sans-serif';
+        ctx.font = '900 13px "Fredoka", sans-serif';
         ctx.textAlign = 'center';
         ctx.strokeStyle = '#111111';
-        ctx.lineWidth = 3.5;
-        ctx.strokeText(enemy.name, 0, barY - 6);
-        ctx.fillStyle = '#fca5a5';
-        ctx.fillText(enemy.name, 0, barY - 6);
+        ctx.lineWidth = 4;
+        ctx.strokeText(`👑 ${enemy.name}`, 0, barY - 7);
+        ctx.fillStyle = '#fde047';
+        ctx.fillText(`👑 ${enemy.name}`, 0, barY - 7);
+    } else {
+        ctx.font = '700 10px "Fredoka", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.strokeStyle = '#111111';
+        ctx.lineWidth = 3;
+        ctx.strokeText(enemy.name, 0, barY - 5);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText(enemy.name, 0, barY - 5);
     }
+
     ctx.restore();
 }
 
-// --- COMBAT & QUEST PROGRESS ---
+// =========================================================================
+// TEXTURAS E ANATOMIA DETALHADA DOS INIMIGOS
+// =========================================================================
+
+function drawSlimeTexture(ctx, enemy, time) {
+    const squish = Math.sin(time * 1.4) * 3.5;
+    const w = enemy.radius + squish;
+    const h = enemy.radius * 0.9 - squish * 0.5;
+
+    // Gradiente gelatinoso
+    const grad = ctx.createRadialGradient(-4, -6, 3, 0, 2, w + 4);
+    grad.addColorStop(0, '#86efac');
+    grad.addColorStop(0.55, '#22c55e');
+    grad.addColorStop(1, '#15803d');
+
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(-w, 6);
+    ctx.bezierCurveTo(-w, -h * 1.35, w, -h * 1.35, w, 6);
+    ctx.quadraticCurveTo(0, 14, -w, 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Núcleo mágico interno
+    ctx.fillStyle = 'rgba(22, 101, 52, 0.55)';
+    ctx.beginPath();
+    ctx.arc(0, -1, 7, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Bolhas internas flutuando
+    ctx.fillStyle = 'rgba(220, 252, 231, 0.65)';
+    ctx.beginPath();
+    ctx.arc(-8, -4 + Math.sin(time * 2) * 2, 2.5, 0, Math.PI * 2);
+    ctx.arc(9, -2 + Math.cos(time * 2) * 2, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Reflexo brilhante no topo
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.beginPath();
+    ctx.ellipse(-7, -10 + squish * 0.3, 6, 2.8, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Olhos expressivos
+    ctx.fillStyle = '#111111';
+    ctx.beginPath();
+    ctx.arc(-6, -1, 2.6, 0, Math.PI * 2);
+    ctx.arc(6, -1, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(-7, -2, 1, 0, Math.PI * 2);
+    ctx.arc(5, -2, 1, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+function drawGoblinTexture(ctx, enemy, dir, walkCycle, idleBob) {
+    // Pés
+    ctx.fillStyle = '#3f6212';
+    ctx.beginPath();
+    ctx.roundRect(-9 - walkCycle * 3, 12 + walkCycle * 2, 8, 6, 3);
+    ctx.roundRect(2 + walkCycle * 3, 12 - walkCycle * 2, 8, 6, 3);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.save();
+    ctx.translate(0, idleBob);
+
+    // Túnica rasgada de couro
+    ctx.fillStyle = '#78350f';
+    ctx.beginPath();
+    ctx.roundRect(-11, -3, 22, 17, 5);
+    ctx.fill();
+    ctx.stroke();
+
+    // Detalhe de costura/cinto na túnica
+    ctx.fillStyle = '#451a03';
+    ctx.fillRect(-10, 7, 20, 4);
+    ctx.fillStyle = '#eab308';
+    ctx.fillRect(-2, 6.5, 4, 5);
+
+    // Orelhas pontudas grandes
+    ctx.fillStyle = '#65a30d';
+    ctx.beginPath();
+    ctx.moveTo(-10, -13);
+    ctx.lineTo(-22, -18);
+    ctx.lineTo(-10, -7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(10, -13);
+    ctx.lineTo(22, -18);
+    ctx.lineTo(10, -7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Cabeça verde texturizada
+    const headGrad = ctx.createRadialGradient(-2, -16, 2, 0, -13, 14);
+    headGrad.addColorStop(0, '#a3e635');
+    headGrad.addColorStop(1, '#4d7c0f');
+    ctx.fillStyle = headGrad;
+    ctx.beginPath();
+    ctx.arc(0, -13, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Nariz pontudo e olhos amarelos malignos
+    const eyeX = dir * 3.5;
+    ctx.fillStyle = '#facc15';
+    ctx.beginPath();
+    ctx.arc(eyeX - 3.5, -14, 2.4, 0, Math.PI * 2);
+    ctx.arc(eyeX + 4.5, -14, 2.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#111111';
+    ctx.beginPath();
+    ctx.arc(eyeX - 3.5, -14, 1.1, 0, Math.PI * 2);
+    ctx.arc(eyeX + 4.5, -14, 1.1, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Sobrancelhas franzidas
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.moveTo(eyeX - 6, -18);
+    ctx.lineTo(eyeX - 1, -16);
+    ctx.moveTo(eyeX + 2, -16);
+    ctx.lineTo(eyeX + 7, -18);
+    ctx.stroke();
+    ctx.lineWidth = 3;
+
+    // Adaga enferrujada na mão
+    ctx.fillStyle = '#cbd5e1';
+    ctx.beginPath();
+    ctx.moveTo(10 * dir, 4);
+    ctx.lineTo(24 * dir, -5);
+    ctx.lineTo(13 * dir, 8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+function drawWolfTexture(ctx, enemy, dir, walkCycle) {
+    ctx.save();
+    ctx.scale(dir, 1);
+
+    // Cauda peluda balançando
+    const tailWag = Math.sin(walkCycle * 2) * 0.25;
+    ctx.save();
+    ctx.translate(-17, -2);
+    ctx.rotate(tailWag);
+    ctx.fillStyle = '#1e293b';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(-14, -10, -18, 2);
+    ctx.quadraticCurveTo(-10, 8, 0, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Patas traseiras e dianteiras animadas
+    ctx.fillStyle = '#1e293b';
+    const legSwing = walkCycle * 5;
+    // Pata traseira
+    ctx.beginPath();
+    ctx.roundRect(-14 - legSwing, 6, 6, 12, 3);
+    ctx.fill();
+    ctx.stroke();
+    // Pata dianteira
+    ctx.beginPath();
+    ctx.roundRect(8 + legSwing, 6, 6, 12, 3);
+    ctx.fill();
+    ctx.stroke();
+
+    // Corpo musculoso com pelagem sombria
+    const furGrad = ctx.createLinearGradient(0, -12, 0, 10);
+    furGrad.addColorStop(0, '#475569');
+    furGrad.addColorStop(0.5, '#334155');
+    furGrad.addColorStop(1, '#1e293b');
+    ctx.fillStyle = furGrad;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 19, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Tufos de pelo no dorso (textura de pelagem)
+    ctx.strokeStyle = '#64748b';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-8, -5); ctx.lineTo(-3, -7);
+    ctx.moveTo(-2, -3); ctx.lineTo(4, -5);
+    ctx.moveTo(-6, 2);  ctx.lineTo(0, 1);
+    ctx.stroke();
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 3;
+
+    // Juba arrepiada no pescoço
+    ctx.fillStyle = '#1e293b';
+    ctx.beginPath();
+    ctx.moveTo(6, -10);
+    ctx.lineTo(11, -17);
+    ctx.lineTo(15, -11);
+    ctx.lineTo(19, -15);
+    ctx.lineTo(18, -4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Cabeça e focinho de lobo
+    ctx.fillStyle = '#334155';
+    ctx.beginPath();
+    ctx.arc(15, -7, 9.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Focinho alongado
+    ctx.fillStyle = '#475569';
+    ctx.beginPath();
+    ctx.roundRect(19, -8, 10, 7, 3);
+    ctx.fill();
+    ctx.stroke();
+
+    // Nariz preto e presa branca
+    ctx.fillStyle = '#090d16';
+    ctx.beginPath();
+    ctx.arc(28, -6, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(23, -1);
+    ctx.lineTo(25, 3);
+    ctx.lineTo(27, -1);
+    ctx.closePath();
+    ctx.fill();
+
+    // Orelha pontuda
+    ctx.fillStyle = '#1e293b';
+    ctx.beginPath();
+    ctx.moveTo(11, -13);
+    ctx.lineTo(13, -23);
+    ctx.lineTo(18, -14);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Olho amarelo brilhante de predador
+    ctx.fillStyle = '#facc15';
+    ctx.beginPath();
+    ctx.arc(18, -9, 2.3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+}
+
+function drawSkeletonTexture(ctx, enemy, dir, walkCycle, idleBob) {
+    // Pernas de osso
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(-5, 10); ctx.lineTo(-6 - walkCycle * 3, 20);
+    ctx.moveTo(5, 10);  ctx.lineTo(6 + walkCycle * 3, 20);
+    ctx.stroke();
+
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(-5, 10); ctx.lineTo(-6 - walkCycle * 3, 20);
+    ctx.moveTo(5, 10);  ctx.lineTo(6 + walkCycle * 3, 20);
+    ctx.stroke();
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 3;
+
+    ctx.save();
+    ctx.translate(0, idleBob);
+
+    // Caixa torácica com costelas visíveis
+    ctx.fillStyle = '#cbd5e1';
+    ctx.beginPath();
+    ctx.roundRect(-9, -3, 18, 14, 4);
+    ctx.fill();
+    ctx.stroke();
+
+    // Listras das costelas
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-7, 1); ctx.lineTo(7, 1);
+    ctx.moveTo(-7, 5); ctx.lineTo(7, 5);
+    ctx.moveTo(-6, 9); ctx.lineTo(6, 9);
+    ctx.stroke();
+    ctx.lineWidth = 3;
+
+    // Crânio
+    ctx.fillStyle = '#f1f5f9';
+    ctx.beginPath();
+    ctx.arc(0, -14, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Maxilar/Dentes
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillRect(-5, -6, 10, 4);
+    ctx.strokeRect(-5, -6, 10, 4);
+
+    // Órbitas oculares + tapa-olho de corsário
+    const eyeX = dir * 3;
+    ctx.fillStyle = '#0f172a';
+    ctx.beginPath();
+    ctx.arc(eyeX - 3.5, -13, 2.7, 0, Math.PI * 2);
+    ctx.arc(eyeX + 4, -13, 2.7, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Brilho espectral no olho visível
+    ctx.fillStyle = '#38bdf8';
+    ctx.beginPath();
+    ctx.arc(eyeX + 4, -13, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Bandana Pirata Vermelha
+    ctx.fillStyle = '#dc2626';
+    ctx.beginPath();
+    ctx.arc(0, -16, 11.5, Math.PI, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Nó da bandana atrás
+    ctx.beginPath();
+    ctx.moveTo(-11 * dir, -16);
+    ctx.lineTo(-18 * dir, -19);
+    ctx.lineTo(-16 * dir, -12);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Sabre Pirata Curvo
+    ctx.fillStyle = '#94a3b8';
+    ctx.beginPath();
+    ctx.moveTo(10 * dir, 4);
+    ctx.quadraticCurveTo(22 * dir, 0, 26 * dir, -12);
+    ctx.lineTo(22 * dir, -13);
+    ctx.quadraticCurveTo(18 * dir, -3, 9 * dir, 1);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+function drawGolemTexture(ctx, enemy, dir, walkCycle, idleBob, time) {
+    // Pernas de rocha pesadas
+    ctx.fillStyle = '#334155';
+    ctx.beginPath();
+    ctx.roundRect(-15, 10 + walkCycle * 2, 11, 12, 3);
+    ctx.roundRect(4, 10 - walkCycle * 2, 11, 12, 3);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.save();
+    ctx.translate(0, idleBob * 0.8);
+
+    // Tronco maciço de pedra
+    const rockGrad = ctx.createLinearGradient(-20, -20, 20, 15);
+    rockGrad.addColorStop(0, '#64748b');
+    rockGrad.addColorStop(0.5, '#475569');
+    rockGrad.addColorStop(1, '#1e293b');
+
+    ctx.fillStyle = rockGrad;
+    ctx.beginPath();
+    ctx.moveTo(-20, -12);
+    ctx.lineTo(-12, -22);
+    ctx.lineTo(12, -22);
+    ctx.lineTo(20, -12);
+    ctx.lineTo(16, 14);
+    ctx.lineTo(-16, 14);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Rachaduras de magma/energia rúnica pulsante no peito
+    const glowAlpha = 0.65 + Math.sin(time * 2) * 0.35;
+    ctx.strokeStyle = `rgba(249, 115, 22, ${glowAlpha})`;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(-6, -8);
+    ctx.lineTo(0, -1);
+    ctx.lineTo(7, -6);
+    ctx.moveTo(0, -1);
+    ctx.lineTo(-2, 8);
+    ctx.stroke();
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 3;
+
+    // Braços gigantes de pedra
+    ctx.fillStyle = '#475569';
+    ctx.beginPath();
+    ctx.roundRect(-27, -12 - walkCycle * 2, 9, 24, 4);
+    ctx.roundRect(18, -12 + walkCycle * 2, 9, 24, 4);
+    ctx.fill();
+    ctx.stroke();
+
+    // Visor/Olhos incandescentes
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(-9 + dir * 2, -17, 18, 5);
+    ctx.fillStyle = '#fb923c';
+    ctx.fillRect(-7 + dir * 2, -16, 5, 3);
+    ctx.fillRect(2 + dir * 2, -16, 5, 3);
+
+    ctx.restore();
+}
+
+function drawBossTexture(ctx, enemy, dir, walkCycle, idleBob, time) {
+    const isIgnis = enemy.id === 'boss_colossus';
+
+    // Aura de energia no chão sob o Chefe
+    ctx.strokeStyle = isIgnis ? 'rgba(239, 68, 68, 0.55)' : 'rgba(234, 179, 8, 0.55)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.ellipse(0, enemy.radius * 0.85, enemy.radius * 1.3 + Math.sin(time * 2) * 3, 10, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = '#111111';
+
+    // Botas blindadas
+    ctx.fillStyle = '#1e293b';
+    ctx.beginPath();
+    ctx.roundRect(-14, 14 + walkCycle * 3, 11, 10, 3);
+    ctx.roundRect(3, 14 - walkCycle * 3, 11, 10, 3);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.save();
+    ctx.translate(0, idleBob);
+
+    // Capa real/sombria atrás
+    ctx.fillStyle = isIgnis ? '#7f1d1d' : '#450a0a';
+    ctx.beginPath();
+    ctx.moveTo(-16, -8);
+    ctx.lineTo(-24, 20);
+    ctx.lineTo(24, 20);
+    ctx.lineTo(16, -8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Armadura peitoral pesada
+    ctx.fillStyle = isIgnis ? '#991b1b' : '#334155';
+    ctx.beginPath();
+    ctx.roundRect(-17, -10, 34, 26, 7);
+    ctx.fill();
+    ctx.stroke();
+
+    // Ombreiras com espinhos
+    ctx.fillStyle = '#64748b';
+    ctx.beginPath();
+    ctx.arc(-18, -8, 9, 0, Math.PI * 2);
+    ctx.arc(18, -8, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Cabeça / Elmo com chifres
+    ctx.fillStyle = isIgnis ? '#b91c1c' : '#4d7c0f';
+    ctx.beginPath();
+    ctx.arc(0, -21, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Chifres curvos
+    ctx.fillStyle = '#fef3c7';
+    ctx.beginPath();
+    ctx.moveTo(-12, -25); ctx.lineTo(-23, -38); ctx.lineTo(-7, -31);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(12, -25); ctx.lineTo(23, -38); ctx.lineTo(7, -31);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Olhos brilhantes furiosos
+    const eyeX = dir * 4;
+    ctx.fillStyle = isIgnis ? '#fde047' : '#ef4444';
+    ctx.beginPath();
+    ctx.arc(eyeX - 4, -21, 2.8, 0, Math.PI * 2);
+    ctx.arc(eyeX + 5, -21, 2.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Machado / Martelo Colossal na mão
+    ctx.save();
+    ctx.translate(18 * dir, 0);
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(0, 14); ctx.lineTo(6 * dir, -24);
+    ctx.stroke();
+
+    ctx.fillStyle = isIgnis ? '#f97316' : '#cbd5e1';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(6 * dir - 12, -30, 24, 14, 4);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.restore();
+}
+
+// =========================================================================
+// 10. COMBATE, MISSÕES E ITENS
+// =========================================================================
 function advanceQuest(questId, amount = 1) {
     let q = quests.find(item => item.id === questId);
     if (q && !q.completed) {
@@ -1392,7 +2404,7 @@ function advanceQuest(questId, amount = 1) {
             q.completed = true;
             player.gold += q.reward.gold;
             spawnFloatingText(player.x, player.y - 65, `+${q.reward.xp} XP (Missão!)`, '#fde047');
-            if (q.reward.weapon) {
+            if (q.reward.weapon && !inventory.some(w => w.id === q.reward.weapon.id)) {
                 inventory.push({ ...q.reward.weapon });
                 document.getElementById('inventoryBadge').classList.remove('hidden');
                 showToast(`Missão "${q.title}" Concluída! +${q.reward.xp} XP e Arma: ${q.reward.weapon.name}!`, 'fa-trophy');
@@ -1410,6 +2422,7 @@ function damageEnemy(enemy, dmg) {
     spawnFloatingText(enemy.x, enemy.y - 30, `-${dmg}`, '#fbbf24');
 
     if (enemy.hp <= 0) {
+        enemy.respawnTimer = 1500; // Renasce após ~25 segundos
         combatCombo.count++;
         combatCombo.timer = 420;
         const comboBonusMult = Math.min(0.5, Math.max(0, (combatCombo.count - 1) * 0.15));
@@ -1425,7 +2438,7 @@ function damageEnemy(enemy, dmg) {
         showToast(`${enemy.name} derrotado! +${finalXp} XP${comboTag} • +${goldReward} Ouro`, 'fa-trophy');
 
         if (enemy.type === 'boss') {
-            inventory.push({ id: 'xp_tome', name: 'Tomo de Sabedoria', type: 'xp_book', count: 1, xpAmount: 250, icon: 'fa-book-open', desc: 'Tomo raro caído de um Chefe! Concede +250 XP ao ser lido.' });
+            inventory.push({ id: 'xp_tome_' + Date.now(), name: 'Tomo de Sabedoria', type: 'xp_book', count: 1, xpAmount: 250, icon: 'fa-book-open', desc: 'Tomo raro caído de um Chefe! Concede +250 XP ao ser lido.' });
             document.getElementById('inventoryBadge').classList.remove('hidden');
         }
 
@@ -1453,6 +2466,8 @@ function playerAttack(targetWorldX, targetWorldY) {
     const wType = player.equippedWeapon.typeKey || 'staff';
     const dir = player.facing === 'left' ? -1 : 1;
 
+    let createdProj = null;
+
     if (wType === 'staff' || wType === 'bow') {
         let pVx = 9.8 * dir;
         let pVy = 0;
@@ -1462,7 +2477,7 @@ function playerAttack(targetWorldX, targetWorldY) {
             pVy = Math.sin(angle) * 11;
             player.facing = targetWorldX < player.x ? 'left' : 'right';
         }
-        projectiles.push({
+        createdProj = {
             x: player.x + 18 * dir,
             y: player.y - 6,
             vx: pVx,
@@ -1470,8 +2485,14 @@ function playerAttack(targetWorldX, targetWorldY) {
             damage: totalAttack,
             kind: wType === 'staff' ? 'orb' : 'arrow',
             life: 40
-        });
+        };
+        projectiles.push(createdProj);
     }
+
+    sendCoopPacket({
+        type: 'attack',
+        projectile: createdProj
+    });
 
     enemies.forEach(enemy => {
         if (enemy.hp <= 0) return;
@@ -1570,6 +2591,7 @@ function buyPotionFromNpc() {
 }
 
 function openModal(id) {
+    keys = {}; // Evita tecla presa ao abrir modal no PC
     document.getElementById(id).classList.remove('hidden');
     if (id === 'inventoryModal') {
         document.getElementById('inventoryBadge').classList.add('hidden');
@@ -1577,6 +2599,7 @@ function openModal(id) {
     }
     if (id === 'statusModal') updateStatusUI();
     if (id === 'questsModal') updateQuestsUI();
+    if (id === 'friendsModal') renderFriendsList();
 }
 
 function closeModal(id) {
@@ -1663,6 +2686,7 @@ function updateStatusUI() {
     document.getElementById('statusHeroName').innerText = player.name;
     document.getElementById('statusClassName').innerText = player.className;
     document.getElementById('statusLevel').innerText = player.level;
+    document.getElementById('statusAccountId').innerText = currentAccount ? currentAccount.id : 'VAL-0000';
     document.getElementById('statusMaxHp').innerText = `${player.hp} / ${player.maxHp}`;
     let totalAtk = player.baseAttack + (player.equippedWeapon ? player.equippedWeapon.bonus : 0);
     document.getElementById('statusAttack').innerText = `${totalAtk} (Def ${player.defense || 4})`;
@@ -1755,5 +2779,6 @@ function gameLoop() {
 }
 
 window.onload = function() {
+    initAccountSystem();
     gameLoop();
 };
