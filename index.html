@@ -3,11 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Crônicas de Valória - RPG 2D</title>
+    <title>Crônicas de Valória - RPG 2D Online</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- PeerJS para Multiplayer Online P2P sem servidor dedicado -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body class="relative w-screen h-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col">
@@ -15,42 +17,69 @@
     <!-- ================= SCREENS & MENUS ================= -->
 
     <!-- 1. MAIN MENU SCREEN -->
-    <div id="mainMenuScreen" class="absolute inset-0 z-50 bg-[#141824] bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-slate-800 via-[#141824] to-[#090b10] flex flex-col items-center justify-center p-6 transition-opacity duration-500 overflow-y-auto">
+    <div id="mainMenuScreen" class="absolute inset-0 z-50 bg-[#141824] bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-slate-800 via-[#141824] to-[#090b10] flex flex-col items-center justify-center p-4 sm:p-6 transition-opacity duration-500 overflow-y-auto">
         <div class="absolute inset-0 opacity-15 bg-[radial-gradient(#f59e0b_1.5px,transparent_1.5px)] [background-size:28px_28px] pointer-events-none"></div>
         
+        <!-- Top Account Bar in Menu -->
+        <div class="relative z-20 w-full max-w-2xl flex flex-wrap items-center justify-between gap-2 bg-[#1e1e26]/90 border-3 border-[#111827] rounded-2xl px-4 py-2.5 mb-4 shadow-[0_4px_0_#111827]">
+            <div class="flex items-center gap-2.5">
+                <div class="w-9 h-9 rounded-xl bg-amber-500/20 border-2 border-amber-400 flex items-center justify-center text-amber-300">
+                    <i class="fa-solid fa-user-shield"></i>
+                </div>
+                <div class="text-left">
+                    <div class="text-xs font-extrabold text-white cartoon-font" id="menuAccountName">Convidado</div>
+                    <div class="flex items-center gap-1.5 text-[11px] font-mono text-amber-400">
+                        <span>ID: <strong id="menuAccountId">---</strong></span>
+                        <button onclick="copyPlayerId()" title="Copiar ID" class="text-slate-300 hover:text-white cursor-pointer"><i class="fa-regular fa-copy"></i></button>
+                    </div>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <button onclick="openModal('friendsModal')" class="bg-sky-600 hover:bg-sky-500 text-white font-bold px-3 py-1.5 rounded-xl border-2 border-[#111827] text-xs cartoon-font flex items-center gap-1.5 shadow cursor-pointer">
+                    <i class="fa-solid fa-user-group"></i> Amigos (<span id="menuFriendCount">0</span>)
+                </button>
+                <button onclick="openAccountModal()" class="bg-slate-700 hover:bg-slate-600 text-amber-300 font-bold px-3 py-1.5 rounded-xl border-2 border-[#111827] text-xs cartoon-font flex items-center gap-1.5 shadow cursor-pointer">
+                    <i class="fa-solid fa-right-left"></i> Conta
+                </button>
+            </div>
+        </div>
+
         <div class="relative z-10 flex flex-col items-center max-w-xl text-center my-auto">
-            <div class="w-24 h-24 bg-gradient-to-br from-amber-400 to-amber-600 rounded-3xl border-4 border-[#111827] shadow-[0_6px_0_#111827] flex items-center justify-center mb-5 transform hover:rotate-6 transition-transform">
-                <i class="fa-solid fa-crown text-[#111827] text-5xl"></i>
+            <div class="w-20 h-20 sm:w-24 sm:h-24 bg-gradient-to-br from-amber-400 to-amber-600 rounded-3xl border-4 border-[#111827] shadow-[0_6px_0_#111827] flex items-center justify-center mb-4 transform hover:rotate-6 transition-transform">
+                <i class="fa-solid fa-crown text-[#111827] text-4xl sm:text-5xl"></i>
             </div>
             
-            <h1 class="cinzel-font text-4xl sm:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-amber-200 via-yellow-400 to-amber-500 mb-2 title-glow tracking-wider drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)]">
+            <h1 class="cinzel-font text-3xl sm:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-amber-200 via-yellow-400 to-amber-500 mb-2 title-glow tracking-wider drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)]">
                 CRÔNICAS DE VALÓRIA
             </h1>
 
-            <!-- Versão Beta Label -->
-            <div class="inline-block bg-amber-500/20 border-2 border-amber-500/50 text-amber-300 font-extrabold px-3 py-0.5 rounded-full text-xs cartoon-font tracking-widest mb-3">
-                VERSÃO BETA
+            <div class="flex items-center gap-2 mb-3">
+                <span class="inline-block bg-amber-500/20 border-2 border-amber-500/50 text-amber-300 font-extrabold px-3 py-0.5 rounded-full text-xs cartoon-font tracking-widest">
+                    VERSÃO ONLINE BETA
+                </span>
+                <span id="onlineNetworkBadge" class="inline-flex items-center gap-1.5 bg-emerald-500/20 border-2 border-emerald-500/50 text-emerald-300 font-bold px-3 py-0.5 rounded-full text-xs cartoon-font">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Rede Ativa
+                </span>
             </div>
 
-            <!-- Bug Report Button -->
-            <button onclick="openBugReportModal()" class="text-xs text-slate-400 hover:text-amber-400 underline font-semibold cartoon-font mb-6 transition-colors cursor-pointer flex items-center gap-1.5">
+            <button onclick="openBugReportModal()" class="text-xs text-slate-400 hover:text-amber-400 underline font-semibold cartoon-font mb-5 transition-colors cursor-pointer flex items-center gap-1.5">
                 <i class="fa-solid fa-bug"></i> Reportar Erro
             </button>
 
-            <p class="text-slate-300 text-sm sm:text-base max-w-md mb-8 font-medium">
-                Explore vilarejos vibrantes, enfrente monstros nas florestas e forje sua lenda neste RPG 2D de ação e aventura.
+            <p class="text-slate-300 text-sm sm:text-base max-w-md mb-6 font-medium">
+                Explore vilarejos vibrantes, enfrente monstros e jogue cooperativamente online com seus amigos pelo ID da conta.
             </p>
 
-            <div class="flex flex-col sm:flex-row gap-4 w-full max-w-md">
-                <button onclick="showCharacterCreation()" class="flex-1 bg-gradient-to-b from-amber-400 to-amber-600 hover:from-amber-300 hover:to-amber-500 text-[#111827] font-extrabold py-4 px-6 rounded-2xl border-3 border-[#111827] shadow-[0_5px_0_#111827] active:translate-y-1 active:shadow-none cartoon-font text-lg flex items-center justify-center gap-3 transition-all cursor-pointer">
+            <div class="flex flex-col sm:flex-row gap-3 sm:gap-4 w-full max-w-md">
+                <button onclick="showCharacterCreation()" class="flex-1 bg-gradient-to-b from-amber-400 to-amber-600 hover:from-amber-300 hover:to-amber-500 text-[#111827] font-extrabold py-3.5 px-6 rounded-2xl border-3 border-[#111827] shadow-[0_5px_0_#111827] active:translate-y-1 active:shadow-none cartoon-font text-base sm:text-lg flex items-center justify-center gap-3 transition-all cursor-pointer">
                     <i class="fa-solid fa-play"></i> Nova Aventura
                 </button>
-                <button onclick="loadAdventureFromMenu()" class="flex-1 bg-[#232736] hover:bg-[#2d3346] text-amber-300 font-bold py-4 px-6 rounded-2xl border-3 border-[#111827] shadow-[0_5px_0_#111827] active:translate-y-1 active:shadow-none cartoon-font text-lg flex items-center justify-center gap-3 transition-all cursor-pointer">
-                    <i class="fa-solid fa-folder-open"></i> Carregar Aventura
+                <button onclick="loadAdventureFromMenu()" class="flex-1 bg-[#232736] hover:bg-[#2d3346] text-amber-300 font-bold py-3.5 px-6 rounded-2xl border-3 border-[#111827] shadow-[0_5px_0_#111827] active:translate-y-1 active:shadow-none cartoon-font text-base sm:text-lg flex items-center justify-center gap-3 transition-all cursor-pointer">
+                    <i class="fa-solid fa-folder-open"></i> Continuar
                 </button>
             </div>
             
-            <span class="text-xs text-slate-500 mt-8 cartoon-font tracking-widest">PC: [W,A,S,D] Mover | [Clique] Atacar | [H] Poção | [J] Inventário | [Z] Salvar | [E] Interagir</span>
+            <span class="text-[11px] text-slate-500 mt-6 cartoon-font tracking-wider">PC: [W,A,S,D] Mover | [Clique] Atacar | [H] Poção | [J] Inventário | [Z] Salvar | [E] Interagir</span>
         </div>
     </div>
 
@@ -60,7 +89,7 @@
             <div class="flex items-center justify-between border-b-2 border-slate-700/70 pb-3">
                 <div>
                     <h2 class="cartoon-font font-bold text-amber-300 text-xl sm:text-2xl">Criação de Herói</h2>
-                    <p class="text-xs text-slate-400">Escolha sua classe e conheça sua lenda em Valória</p>
+                    <p class="text-xs text-slate-400">Conta: <span id="creationAccountTag" class="text-amber-300 font-bold">---</span></p>
                 </div>
                 <button onclick="backToMainMenu()" class="w-9 h-9 rounded-full bg-slate-800 border-2 border-[#111827] text-slate-300 hover:text-white flex items-center justify-center cursor-pointer"><i class="fa-solid fa-xmark"></i></button>
             </div>
@@ -180,10 +209,19 @@
         <div id="regionBadge" class="hidden md:flex items-center gap-2 bg-[#1e1e26]/90 border-3 border-[#111827] px-4 py-1.5 rounded-2xl shadow-[0_4px_0_#111827] text-amber-300 cartoon-font text-xs font-bold tracking-wide">
             <i class="fa-solid fa-compass text-emerald-400"></i>
             <span id="regionNameText">Bosque de Valória</span>
+            <span id="hudCoopStatus" class="hidden ml-2 pl-2 border-l border-slate-600 text-sky-400 flex items-center gap-1">
+                <i class="fa-solid fa-wifi"></i> <span id="hudCoopFriendName">Amigo</span>
+            </span>
         </div>
 
-        <!-- Top-Right Action Buttons with PC Key Indicators -->
+        <!-- Top-Right Action Buttons -->
         <div class="pointer-events-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <button onclick="openModal('friendsModal')" title="Amigos & Online" class="relative bg-gradient-to-b from-sky-400 to-blue-600 hover:from-sky-300 hover:to-blue-500 border-3 border-[#111827] text-white h-11 sm:h-12 px-2.5 sm:px-3.5 rounded-2xl flex items-center justify-center gap-1.5 shadow-[0_4px_0_#111827] active:translate-y-0.5 transition-all font-extrabold cartoon-font text-xs sm:text-sm cursor-pointer">
+                <i class="fa-solid fa-user-group text-base sm:text-lg"></i>
+                <span class="hidden sm:inline">Online</span>
+                <span id="coopOnlineDot" class="hidden absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#111827]"></span>
+            </button>
+
             <button onclick="openModal('inventoryModal')" title="Inventário [J]" class="relative bg-gradient-to-b from-amber-400 to-orange-600 hover:from-amber-300 hover:to-orange-500 border-3 border-[#111827] text-[#111827] h-11 sm:h-12 px-2 sm:px-3.5 rounded-2xl flex items-center justify-center gap-1.5 shadow-[0_4px_0_#111827] active:translate-y-0.5 transition-all font-extrabold cartoon-font text-xs sm:text-sm cursor-pointer">
                 <i class="fa-solid fa-suitcase-rolling text-base sm:text-lg text-red-900"></i>
                 <span class="hidden sm:inline">Inv</span> <span class="text-[10px] bg-[#111827] text-amber-300 px-1 py-0.2 rounded font-mono">J</span>
@@ -196,7 +234,7 @@
                 <span id="questActiveCount" class="bg-[#111827]/70 text-amber-300 text-[10px] px-1.5 py-0.2 rounded-md ml-0.5">0/5</span>
             </button>
 
-            <button onclick="saveGameProgress()" title="Salvar Progresso [Z]" class="bg-gradient-to-b from-sky-400 via-blue-500 to-indigo-700 hover:from-sky-300 hover:to-indigo-600 border-3 border-[#111827] text-white h-11 sm:h-12 px-2.5 sm:px-3.5 rounded-2xl flex items-center justify-center gap-1.5 shadow-[0_4px_0_#111827] active:translate-y-0.5 transition-all font-extrabold cartoon-font text-xs sm:text-sm cursor-pointer">
+            <button onclick="saveGameProgress()" title="Salvar Progresso [Z]" class="bg-gradient-to-b from-indigo-500 to-purple-700 hover:from-indigo-400 hover:to-purple-600 border-3 border-[#111827] text-white h-11 sm:h-12 px-2.5 sm:px-3.5 rounded-2xl flex items-center justify-center gap-1.5 shadow-[0_4px_0_#111827] active:translate-y-0.5 transition-all font-extrabold cartoon-font text-xs sm:text-sm cursor-pointer">
                 <i class="fa-solid fa-floppy-disk text-base sm:text-xl text-white drop-shadow"></i>
                 <span class="hidden lg:inline">Salvar</span> <span class="text-[10px] bg-[#111827] text-amber-300 px-1 py-0.2 rounded font-mono">Z</span>
             </button>
@@ -212,7 +250,7 @@
     </div>
 
     <!-- NOTIFICATION TOAST -->
-    <div id="toast" class="absolute top-24 left-1/2 -translate-x-1/2 z-30 pointer-events-none opacity-0 transition-all duration-300 transform -translate-y-4 w-max max-w-[92vw]">
+    <div id="toast" class="absolute top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none opacity-0 transition-all duration-300 transform -translate-y-4 w-max max-w-[92vw]">
         <div class="bg-[#1e1e26]/95 border-3 border-[#111827] text-amber-200 px-4 py-2 rounded-2xl shadow-[0_4px_0_#111827] backdrop-blur-md flex items-center gap-2.5">
             <i id="toastIcon" class="fa-solid fa-circle-info text-amber-400 text-base"></i>
             <span id="toastText" class="font-bold text-xs sm:text-sm tracking-wide cartoon-font">Mensagem do Sistema</span>
@@ -274,6 +312,107 @@
     </div>
 
     <!-- ================= MODALS ================= -->
+
+    <!-- ACCOUNT SYSTEM MODAL -->
+    <div id="accountModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="bg-[#1e1e26] border-4 border-[#111827] w-full max-w-md rounded-3xl shadow-[0_8px_0_#111827] overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="bg-[#14141a] px-5 py-4 border-b-2 border-slate-800 flex justify-between items-center">
+                <h2 class="cartoon-font font-bold text-amber-300 text-lg flex items-center gap-2">
+                    <i class="fa-solid fa-id-card text-amber-400"></i> Conta de Valória
+                </h2>
+                <button onclick="closeModal('accountModal')" class="w-8 h-8 rounded-full bg-slate-800 text-slate-300 hover:text-white flex items-center justify-center cursor-pointer"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="p-5 overflow-y-auto flex flex-col gap-4">
+                <!-- Current Account Box -->
+                <div class="bg-[#14141a] border-2 border-amber-500/40 rounded-2xl p-4 flex flex-col gap-2">
+                    <div class="flex justify-between items-center">
+                        <span class="text-[11px] uppercase font-bold text-slate-400">Conta Conectada</span>
+                        <span class="text-[11px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-bold">Ativa</span>
+                    </div>
+                    <div class="text-lg font-extrabold text-white cartoon-font" id="modalCurrentAccName">Aventureiro</div>
+                    <div class="flex items-center justify-between bg-[#23232e] px-3 py-2 rounded-xl border border-slate-700">
+                        <span class="text-xs font-mono text-amber-400">ID: <strong id="modalCurrentAccId">VAL-0000</strong></span>
+                        <button onclick="copyPlayerId()" class="bg-amber-500 hover:bg-amber-400 text-[#111827] text-xs font-extrabold px-2.5 py-1 rounded-lg cartoon-font cursor-pointer">
+                            <i class="fa-regular fa-copy"></i> Copiar ID
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Create New Account -->
+                <div class="flex flex-col gap-2">
+                    <label class="text-xs font-bold uppercase text-amber-400 cartoon-font">Criar Nova Conta (Gera ID Aleatório)</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="newAccountNameInput" maxlength="16" placeholder="Apelido da conta..." class="flex-1 bg-[#14141a] border-2 border-slate-700 focus:border-amber-400 rounded-xl px-3 py-2 text-white text-sm outline-none cartoon-font">
+                        <button onclick="createNewAccount()" class="bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 text-[#111827] font-extrabold px-4 py-2 rounded-xl border-2 border-[#111827] text-xs cartoon-font shadow cursor-pointer">
+                            Criar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Saved Accounts List -->
+                <div class="flex flex-col gap-2">
+                    <label class="text-xs font-bold uppercase text-slate-400 cartoon-font">Suas Contas Salvas</label>
+                    <div id="savedAccountsList" class="flex flex-col gap-2 max-h-40 overflow-y-auto pr-1"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- FRIENDS & MULTIPLAYER CO-OP MODAL -->
+    <div id="friendsModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="bg-[#1e1e26] border-4 border-[#111827] w-full max-w-lg rounded-3xl shadow-[0_8px_0_#111827] overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="bg-[#14141a] px-5 py-4 border-b-2 border-slate-800 flex justify-between items-center">
+                <h2 class="cartoon-font font-bold text-sky-400 text-lg flex items-center gap-2">
+                    <i class="fa-solid fa-user-group"></i> Amigos & Sessão Online
+                </h2>
+                <button onclick="closeModal('friendsModal')" class="w-8 h-8 rounded-full bg-slate-800 text-slate-300 hover:text-white flex items-center justify-center cursor-pointer"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="p-5 overflow-y-auto flex flex-col gap-4">
+                <!-- Share Your ID -->
+                <div class="bg-[#14141a] border-2 border-[#111827] rounded-2xl p-3.5 flex items-center justify-between gap-2">
+                    <div>
+                        <span class="text-[11px] text-slate-400 block">Seu ID para jogar online:</span>
+                        <span class="font-mono font-extrabold text-amber-400 text-base" id="friendsModalMyId">VAL-0000</span>
+                    </div>
+                    <button onclick="copyPlayerId()" class="bg-amber-500 hover:bg-amber-400 text-[#111827] font-extrabold px-3.5 py-2 rounded-xl border-2 border-[#111827] text-xs cartoon-font shadow cursor-pointer">
+                        <i class="fa-regular fa-copy"></i> Copiar
+                    </button>
+                </div>
+
+                <!-- Active Co-op Connection Banner -->
+                <div id="activeCoopBanner" class="hidden bg-emerald-950/80 border-2 border-emerald-500 rounded-2xl p-3.5 flex items-center justify-between">
+                    <div class="flex items-center gap-2.5">
+                        <span class="w-3 h-3 rounded-full bg-emerald-400 animate-ping"></span>
+                        <div>
+                            <div class="text-xs font-extrabold text-emerald-300 cartoon-font">Conectado em Co-op!</div>
+                            <div class="text-xs text-slate-200" id="connectedPeerLabel">Jogando com Amigo</div>
+                        </div>
+                    </div>
+                    <button onclick="disconnectCoop()" class="bg-rose-600 hover:bg-rose-500 text-white font-bold px-3 py-1.5 rounded-xl border-2 border-[#111827] text-xs cartoon-font cursor-pointer">
+                        Desconectar
+                    </button>
+                </div>
+
+                <!-- Add Friend by ID -->
+                <div class="flex flex-col gap-2">
+                    <label class="text-xs font-bold uppercase text-amber-400 cartoon-font">Adicionar Amigo pelo ID</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="addFriendIdInput" placeholder="Ex: VAL-4829" maxlength="12" class="flex-1 bg-[#14141a] border-2 border-slate-700 focus:border-sky-400 rounded-xl px-3 py-2 text-white font-mono text-sm uppercase outline-none">
+                        <input type="text" id="addFriendNickInput" placeholder="Apelido (opcional)" maxlength="14" class="w-32 sm:w-36 bg-[#14141a] border-2 border-slate-700 focus:border-sky-400 rounded-xl px-3 py-2 text-white text-xs outline-none cartoon-font">
+                        <button onclick="addFriendById()" class="bg-gradient-to-b from-sky-400 to-blue-600 hover:from-sky-300 hover:to-blue-500 text-white font-extrabold px-4 py-2 rounded-xl border-2 border-[#111827] text-xs cartoon-font shadow cursor-pointer">
+                            <i class="fa-solid fa-user-plus"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Friends List -->
+                <div class="flex flex-col gap-2">
+                    <label class="text-xs font-bold uppercase text-slate-400 cartoon-font">Lista de Amigos</label>
+                    <div id="friendsListContainer" class="flex flex-col gap-2 max-h-48 overflow-y-auto"></div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- BUG REPORT MODAL -->
     <div id="bugReportModal" class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm hidden flex items-center justify-center p-4">
@@ -352,7 +491,7 @@
                     <div>
                         <h3 id="statusHeroName" class="cartoon-font font-bold text-xl text-white">Aldric</h3>
                         <p class="text-xs text-amber-400 font-bold"><span id="statusClassName">Mago Arcano</span> • Nível <span id="statusLevel">1</span></p>
-                        <p class="text-xs text-slate-400 mt-0.5">Guardião de Valória</p>
+                        <p class="text-xs font-mono text-sky-400 mt-0.5">ID: <span id="statusAccountId">VAL-0000</span></p>
                     </div>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
@@ -374,7 +513,10 @@
                     </div>
                 </div>
             </div>
-            <div class="bg-[#14141a] px-5 py-3 border-t-2 border-slate-800 flex justify-end">
+            <div class="bg-[#14141a] px-5 py-3 border-t-2 border-slate-800 flex justify-between items-center">
+                <button onclick="returnToMenuFromGame()" class="bg-slate-700 hover:bg-slate-600 text-slate-200 px-4 py-2 rounded-xl border-2 border-[#111827] font-bold text-xs cartoon-font cursor-pointer">
+                    <i class="fa-solid fa-house"></i> Menu Principal
+                </button>
                 <button onclick="closeModal('statusModal')" class="bg-amber-500 hover:bg-amber-400 text-[#111827] px-5 py-2 rounded-xl border-2 border-[#111827] font-extrabold cartoon-font shadow cursor-pointer">Fechar</button>
             </div>
         </div>
@@ -397,6 +539,6 @@
     </div>
 
     <!-- External Script -->
-    <script src="script.js"></script>
+    <script src="Game.js"></script>
 </body>
 </html>
